@@ -7,6 +7,7 @@ import argparse
 import itertools
 import os
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,7 @@ import time
 
 import crawl
 import executable
+import push
 import utils
 import workflow
 import yaml
@@ -30,16 +32,67 @@ DATA_BASE = os.path.join(PATH, "data")
 
 def assign(
     bin_name: str,
-    filename: str = "",
+    domains_file: str = "",
     overwrite: bool = False,
     pages: int = sys.maxsize,
     rigid: bool = True,
     display: bool = True,
     num_threads: int = 0,
+    **kwargs,
 ) -> list[TaskConfig]:
+    def load_exist(username: str, gist_id: str, access_token: str, filename: str) -> list[str]:
+        if not filename:
+            return []
+
+        subscriptions = set()
+
+        pattern = r"^https?:\/\/[^\s]+"
+        local_file = os.path.join(DATA_BASE, filename)
+        if os.path.exists(local_file) and os.path.isfile(local_file):
+            with open(local_file, "r", encoding="utf8") as f:
+                items = re.findall(pattern, str(f.read()), flags=re.M)
+                if items:
+                    subscriptions.update(items)
+
+        if username and gist_id and access_token:
+            push_tool = push.PushToGist(token=access_token)
+            url = push_tool.raw_url(push_conf={"username": username, "gistid": gist_id, "filename": filename})
+
+            content = utils.http_get(url=url, timeout=30)
+            items = re.findall(pattern, content, flags=re.M)
+            if items:
+                subscriptions.update(items)
+
+        return list(subscriptions)
+
+    subscribes_file = utils.trim(kwargs.get("subscribes_file", ""))
+    access_token = utils.trim(kwargs.get("access_token", ""))
+    gist_id = utils.trim(kwargs.get("gist_id", ""))
+    username = utils.trim(kwargs.get("username", ""))
+
+    # 加载已有订阅
+    subscriptions = load_exist(username, gist_id, access_token, subscribes_file)
+    logger.info(f"load exists subscription finished, count: {len(subscriptions)}")
+
+    tasks = (
+        [TaskConfig(name=utils.random_chars(length=8), sub=x, bin_name=bin_name) for x in subscriptions if x]
+        if subscriptions
+        else []
+    )
+
+    # 仅更新已有订阅
+    if tasks and kwargs.get("refresh", False):
+        logger.info("skip registering new accounts, will use existing subscriptions for refreshing")
+        return tasks
+
     domains, delimiter = {}, "@#@#"
-    if filename and os.path.exists(filename) and os.path.isfile(filename):
-        with open(filename, "r", encoding="UTF8") as f:
+    domains_file = utils.trim(domains_file)
+    if not domains_file:
+        domains_file = "domains.txt"
+
+    fullpath = os.path.join(DATA_BASE, domains_file)
+    if os.path.exists(fullpath) and os.path.isfile(fullpath):
+        with open(fullpath, "r", encoding="UTF8") as f:
             for line in f.readlines():
                 line = line.replace("\n", "").strip()
                 if not line:
@@ -58,7 +111,7 @@ def assign(
             num_thread=num_threads,
             rigid=rigid,
             display=display,
-            filepath=os.path.join(DATA_BASE, "materials.txt"),
+            filepath=os.path.join(DATA_BASE, "coupons.txt"),
             delimiter=delimiter,
         )
 
@@ -67,13 +120,12 @@ def assign(
             overwrite = True
 
     if not domains:
-        logger.error("[CrawlError] cannot collect any airport for free use")
-        return []
+        logger.error("cannot collect any new airport for free use")
+        return tasks
 
     if overwrite:
-        crawl.save_candidates(candidates=domains, filepath=filename, delimiter=delimiter)
+        crawl.save_candidates(candidates=domains, filepath=fullpath, delimiter=delimiter)
 
-    tasks = list()
     for domain, coupon in domains.items():
         name = crawl.naming_task(url=domain)
         tasks.append(TaskConfig(name=name, domain=domain, coupon=coupon, bin_name=bin_name, rigid=rigid))
@@ -82,21 +134,35 @@ def assign(
 
 
 def aggregate(args: argparse.Namespace) -> None:
-    if not args or not args.output:
-        logger.error(f"config error, output: {args.output}")
-        return
+    def parse_gist_link(link: str) -> tuple[str, str]:
+        # extract gist username and id
+        words = utils.trim(link).split("/", maxsplit=1)
+        if len(words) != 2:
+            logger.error(f"cannot extract username and gist id due to invalid github gist link")
+            return "", ""
+
+        return utils.trim(words[0]), utils.trim(words[1])
 
     clash_bin, subconverter_bin = executable.which_bin()
     display = not args.invisible
 
+    subscribes_file = "subscribes.txt"
+    access_token = utils.trim(args.key)
+    username, gist_id = parse_gist_link(args.gist)
+
     tasks = assign(
         bin_name=subconverter_bin,
-        filename=os.path.join(DATA_BASE, "domains.txt"),
+        domains_file="domains.txt",
         overwrite=args.overwrite,
         pages=args.pages,
         rigid=not args.relaxed,
         display=display,
         num_threads=args.num,
+        refresh=args.clean,
+        username=username,
+        gist_id=gist_id,
+        access_token=access_token,
+        subscribes_file=subscribes_file,
     )
 
     if not tasks:
@@ -166,7 +232,7 @@ def aggregate(args: argparse.Namespace) -> None:
 
     subscriptions = set()
     for p in proxies:
-        # remove unused key
+        # 移除无用的标记
         p.pop("chatgpt", False)
         p.pop("liveness", True)
 
@@ -177,13 +243,16 @@ def aggregate(args: argparse.Namespace) -> None:
     data = {"proxies": nodes}
     urls = list(subscriptions)
 
-    os.makedirs(args.output, exist_ok=True)
-    proxies_file = os.path.join(args.output, args.filename)
+    # 如果文件夹不存在则创建
+    os.makedirs(DATA_BASE, exist_ok=True)
+
+    default_filename = "proxies.yaml"
+    proxies_file = os.path.join(DATA_BASE, args.filename or default_filename)
 
     if args.all:
-        temp_file, dest_file, artifact, target = "proxies.yaml", "config.yaml", "convert", "clash"
+        dest_file, artifact, target = "config.yaml", "convert", "clash"
 
-        filepath = os.path.join(PATH, "subconverter", temp_file)
+        filepath = os.path.join(PATH, "subconverter", default_filename)
         if os.path.exists(filepath) and os.path.isfile(filepath):
             os.remove(filepath)
 
@@ -193,7 +262,7 @@ def aggregate(args: argparse.Namespace) -> None:
         if os.path.exists(generate_conf) and os.path.isfile(generate_conf):
             os.remove(generate_conf)
 
-        success = subconverter.generate_conf(generate_conf, artifact, temp_file, dest_file, target, False, False)
+        success = subconverter.generate_conf(generate_conf, artifact, default_filename, dest_file, target, False, False)
         if not success:
             logger.error(f"cannot generate subconverter config file, exit")
             sys.exit(0)
@@ -222,11 +291,34 @@ def aggregate(args: argparse.Namespace) -> None:
 
         logger.info(f"filter subscriptions finished, total: {len(tasks)}, found: {len(urls)}, discard: {discard}")
 
-    utils.write_file(filename=os.path.join(args.output, "subscribes.txt"), lines=urls)
+    utils.write_file(filename=os.path.join(DATA_BASE, subscribes_file), lines=urls)
     domains = [utils.extract_domain(url=x, include_protocal=True) for x in urls]
 
-    # 更新 domains.txt 文件为实际可使用的网站列表
-    utils.write_file(filename=os.path.join(args.output, "valid-domains.txt"), lines=list(set(domains)))
+    # 保存实际可使用的网站列表
+    utils.write_file(filename=os.path.join(DATA_BASE, "valid-domains.txt"), lines=list(set(domains)))
+
+    # 如有必要，上传至 Gist
+    if gist_id and access_token:
+        files, push_conf = {}, {"gistid": gist_id, "filename": default_filename}
+
+        if os.path.exists(proxies_file) and os.path.isfile(proxies_file):
+            with open(proxies_file, "r", encoding="utf8") as f:
+                files[default_filename] = {"content": f.read(), "filename": default_filename}
+
+        if urls:
+            files[subscribes_file] = {"content": "\n".join(urls), "filename": subscribes_file}
+
+        if files:
+            push_client = push.PushToGist(token=access_token)
+
+            # 上传
+            success = push_client.push_to(content="", push_conf=push_conf, payload={"files": files})
+            if success:
+                logger.info(f"upload proxies and subscriptions to gist successed")
+            else:
+                logger.error(f"upload proxies and subscriptions to gist failed")
+
+    # 清理工作空间
     workflow.cleanup(workspace, [])
 
 
@@ -239,6 +331,15 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="generate full configuration for clash",
+    )
+
+    parser.add_argument(
+        "-c",
+        "--clean",
+        dest="clean",
+        action="store_true",
+        default=False,
+        help="refresh proxies only using existing subscriptions",
     )
 
     parser.add_argument(
@@ -260,12 +361,30 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "-g",
+        "--gist",
+        type=str,
+        required=False,
+        default=os.environ.get("GIST_LINK", ""),
+        help="github username and gist id, separated by '/'",
+    )
+
+    parser.add_argument(
         "-i",
         "--invisible",
         dest="invisible",
         action="store_true",
         default=False,
         help="don't show check progress bar",
+    )
+
+    parser.add_argument(
+        "-k",
+        "--key",
+        type=str,
+        required=False,
+        default=os.environ.get("GITHUB_PAT", ""),
+        help="github personal access token for editing gist",
     )
 
     parser.add_argument(
@@ -288,11 +407,11 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "-o",
-        "--output",
-        type=str,
-        required=False,
-        default=DATA_BASE,
-        help="output directory",
+        "--overwrite",
+        dest="overwrite",
+        action="store_true",
+        default=False,
+        help="overwrite domains",
     )
 
     parser.add_argument(
@@ -347,15 +466,6 @@ if __name__ == "__main__":
         required=False,
         default=0,
         help="vestigial traffic allowed to use, unit: GB",
-    )
-
-    parser.add_argument(
-        "-w",
-        "--overwrite",
-        dest="overwrite",
-        action="store_true",
-        default=False,
-        help="overwrite domains",
     )
 
     aggregate(args=parser.parse_args())
