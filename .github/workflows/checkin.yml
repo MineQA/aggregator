@@ -1,4 +1,4 @@
-name: Get Subscription Weekly
+name: checkin
 
 on:
   schedule:
