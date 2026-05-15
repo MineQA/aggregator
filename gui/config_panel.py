@@ -38,21 +38,28 @@ class ConfigPanel(ctk.CTkFrame):
         self.scroll.grid_columnconfigure(1, weight=1)
 
         self._build_common(0)
-        self.collect_start = 9
-        self._build_collect(self.collect_start)
-        self.process_start = 27
-        self._build_process(self.process_start)
+        self._build_collect(9)
+        self._build_process(27)
         self._refresh_mode()
 
-    def _entry(self, row: int, label: str, var: ctk.StringVar, show: str | None = None, browse: str | None = None) -> None:
-        ctk.CTkLabel(self.scroll, text=label).grid(row=row, column=0, sticky="w", padx=8, pady=5)
+    def _entry(self, row: int, label: str, var: ctk.StringVar, show: str | None = None, browse: str | None = None, track: list | None = None) -> None:
+        lbl = ctk.CTkLabel(self.scroll, text=label)
+        lbl.grid(row=row, column=0, sticky="w", padx=8, pady=5)
         entry = ctk.CTkEntry(self.scroll, textvariable=var, show=show or "")
         entry.grid(row=row, column=1, sticky="ew", padx=8, pady=5)
+        if track is not None:
+            track.extend([lbl, entry])
         if browse:
-            ctk.CTkButton(self.scroll, text="浏览", width=64, command=lambda: self._browse(var, browse)).grid(row=row, column=2, sticky="e", padx=8, pady=5)
+            btn = ctk.CTkButton(self.scroll, text="浏览", width=64, command=lambda: self._browse(var, browse))
+            btn.grid(row=row, column=2, sticky="e", padx=8, pady=5)
+            if track is not None:
+                track.append(btn)
 
-    def _check(self, row: int, text: str, var: ctk.BooleanVar, column: int = 0) -> None:
-        ctk.CTkCheckBox(self.scroll, text=text, variable=var).grid(row=row, column=column, sticky="w", padx=8, pady=5)
+    def _check(self, row: int, text: str, var: ctk.BooleanVar, column: int = 0, track: list | None = None) -> None:
+        cb = ctk.CTkCheckBox(self.scroll, text=text, variable=var)
+        cb.grid(row=row, column=column, sticky="w", padx=8, pady=5)
+        if track is not None:
+            track.append(cb)
 
     def _build_common(self, row: int) -> None:
         ctk.CTkLabel(self.scroll, text="通用配置", font=ctk.CTkFont(size=15, weight="bold")).grid(row=row, column=0, columnspan=3, sticky="w", padx=8, pady=(8, 4))
@@ -70,8 +77,9 @@ class ConfigPanel(ctk.CTkFrame):
 
     def _build_collect(self, row: int) -> None:
         self.collect_widgets: list[ctk.CTkBaseClass] = []
+        track = self.collect_widgets
         title = ctk.CTkLabel(self.scroll, text="Collect 模式", font=ctk.CTkFont(size=15, weight="bold"))
-        title.grid(row=row, column=0, columnspan=3, sticky="w", padx=8, pady=(16, 4)); self.collect_widgets.append(title)
+        title.grid(row=row, column=0, columnspan=3, sticky="w", padx=8, pady=(16, 4)); track.append(title)
         defaults = {
             "gist_pat": "", "gist_link": "", "local_path": "", "pages": "0", "flow": "0", "life": "0", "delay": "5000", "customize": "",
         }
@@ -81,15 +89,16 @@ class ConfigPanel(ctk.CTkFrame):
             self.collect_vars[k] = ctk.BooleanVar(value=v)
         entries = [("gist_pat", "GitHub Token", "*", None), ("gist_link", "Gist ID(username/gist_id)", None, None), ("local_path", "本地输出路径", None, "dir"), ("pages", "爬取页数(0=不限)", None, None), ("flow", "最小剩余流量GB", None, None), ("life", "最小剩余时间小时", None, None), ("delay", "最大延迟ms", None, None), ("customize", "自定义机场列表URL/文件", None, None)]
         for idx, (key, label, show, browse) in enumerate(entries, start=row + 1):
-            self._entry(idx, label, self.collect_vars[key], show=show, browse=browse)
+            self._entry(idx, label, self.collect_vars[key], show=show, browse=browse, track=track)
         checks = [("local", "输出到本地"), ("skip", "跳过可用性检查"), ("overwrite", "覆盖域名列表"), ("easygoing", "宽松注册"), ("chuck", "丢弃需人机验证站点"), ("all", "生成完整 Clash 配置"), ("vitiate", "忽略默认过滤规则")]
         for i, (key, text) in enumerate(checks):
-            self._check(row + 10 + i // 2, text, self.collect_vars[key], i % 2)
+            cb = self._check(row + 10 + i // 2, text, self.collect_vars[key], i % 2, track=track)
 
     def _build_process(self, row: int) -> None:
         self.process_widgets: list[ctk.CTkBaseClass] = []
+        track = self.process_widgets
         title = ctk.CTkLabel(self.scroll, text="Process 模式", font=ctk.CTkFont(size=15, weight="bold"))
-        title.grid(row=row, column=0, columnspan=3, sticky="w", padx=8, pady=(16, 4)); self.process_widgets.append(title)
+        title.grid(row=row, column=0, columnspan=3, sticky="w", padx=8, pady=(16, 4)); track.append(title)
         defaults = {"server": "", "push_token": "", "retry": "3", "environment": ".env", "workflow_mode": "0"}
         for k, v in defaults.items():
             self.process_vars[k] = ctk.StringVar(value=v)
@@ -97,22 +106,17 @@ class ConfigPanel(ctk.CTkFrame):
             self.process_vars[k] = ctk.BooleanVar(value=v)
         entries = [("server", "配置文件路径/URL", None, "file"), ("push_token", "Push Token", "*", None), ("retry", "重试次数", None, None), ("environment", "环境文件", None, "file"), ("workflow_mode", "工作流模式(0/1/2)", None, None)]
         for idx, (key, label, show, browse) in enumerate(entries, start=row + 1):
-            self._entry(idx, label, self.process_vars[key], show=show, browse=browse)
+            self._entry(idx, label, self.process_vars[key], show=show, browse=browse, track=track)
         checks = [("check", "仅检查模式"), ("flexible", "灵活注册"), ("overwrite", "覆写"), ("invisible", "隐藏进度条"), ("skip_alive", "跳过活性检查"), ("skip_remark", "跳过备注"), ("special_protocols", "启用特殊协议"), ("trace", "追踪日志"), ("reachable", "要求网络可达")]
         for i, (key, text) in enumerate(checks):
-            self._check(row + 7 + i // 2, text, self.process_vars[key], i % 2)
+            self._check(row + 7 + i // 2, text, self.process_vars[key], i % 2, track=track)
 
     def _refresh_mode(self) -> None:
         mode = self.mode.get()
-        for widget in getattr(self, "collect_widgets", []):
-            pass
-        for child in self.scroll.winfo_children():
-            info = child.grid_info()
-            row = int(info.get("row", -1))
-            if self.collect_start <= row < self.process_start:
-                child.grid() if mode == "collect" else child.grid_remove()
-            elif row >= self.process_start:
-                child.grid() if mode == "process" else child.grid_remove()
+        for w in self.collect_widgets:
+            w.grid() if mode == "collect" else w.grid_remove()
+        for w in self.process_widgets:
+            w.grid() if mode == "process" else w.grid_remove()
 
     def _browse(self, var: ctk.StringVar, kind: str) -> None:
         path = filedialog.askdirectory() if kind == "dir" else filedialog.askopenfilename()
