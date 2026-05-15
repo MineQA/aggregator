@@ -29,7 +29,7 @@ import subconverter
 
 PATH = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 
-DATA_BASE = os.path.join(PATH, "data")
+DATA_BASE = os.environ.get("LOCAL_BASEDIR", os.path.join(PATH, "data"))
 
 
 def assign(

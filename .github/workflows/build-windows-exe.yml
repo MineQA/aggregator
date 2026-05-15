@@ -1,0 +1,47 @@
+name: Build Windows exe
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install customtkinter pyinstaller
+
+      - name: Build executable
+        run: python -m PyInstaller aggregator.spec --clean --noconfirm
+
+      - name: Archive build output
+        shell: pwsh
+        run: Compress-Archive -Path "dist/aggregator/*" -DestinationPath "aggregator-windows.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aggregator-windows
+          path: aggregator-windows.zip
+
+      - name: Publish release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: aggregator-windows.zip

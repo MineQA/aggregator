@@ -150,6 +150,42 @@ python subscribe/process.py -s config.json --check
 python subscribe/process.py -s config.json -n 128
 ```
 
+## 🪟 Windows GUI 与 exe 构建
+
+项目提供一个基于 CustomTkinter 的 Windows 图形界面入口，支持 Collect 与 Process 两种模式：
+
+- Collect 模式：支持 Gist ID、本地路径、输出类型、线程、超时、跳过检查、覆盖、宽松注册、自定义机场列表等配置。
+- Process 模式：支持配置文件路径/URL、Push Token、存储引擎提示、工作流模式、特殊协议、追踪日志等配置。
+- GUI 会以子进程方式运行 `subscribe/collect.py` 或 `subscribe/process.py`，并实时显示日志。
+
+### 本地运行 GUI
+
+```bash
+pip install -r requirements.txt
+python main.py
+```
+
+### 本地构建 Windows exe
+
+```bat
+build_exe.bat
+```
+
+构建产物位于：
+
+```text
+dist\aggregator\aggregator.exe
+```
+
+### 使用 GitHub Actions 构建
+
+仓库包含 `Build Windows exe` 工作流，可在 GitHub 页面手动触发；推送 `v*` 标签时也会自动构建并上传 `aggregator-windows.zip`。
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
 
 ## 📚 相关文档
 
