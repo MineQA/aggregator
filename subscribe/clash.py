@@ -4,6 +4,7 @@
 # @Time    : 2022-07-15
 
 import base64
+import ipaddress
 import itertools
 import json
 import os
@@ -19,6 +20,7 @@ from collections import defaultdict
 import executable
 import utils
 import yaml
+from logger import logger
 
 CTX = ssl.create_default_context()
 CTX.check_hostname = False
@@ -147,7 +149,7 @@ def proxies_exists(proxy: dict, hosts: dict) -> bool:
     protocol = proxy.get("type", "")
     if protocol == "http" or protocol == "socks5":
         return True
-    elif protocol == "ss" or protocol == "trojan":
+    elif protocol in ["ss", "trojan", "anytls", "hysteria2"]:
         return any(p.get("password", "") == proxy.get("password", "") for p in proxies)
     elif protocol == "ssr":
         return any(
@@ -161,8 +163,6 @@ def proxies_exists(proxy: dict, hosts: dict) -> bool:
         if proxy.get("token", ""):
             return any(p.get("token", "") == proxy.get("token", "") for p in proxies)
         return any(p.get("uuid", "") == proxy.get("uuid", "") for p in proxies)
-    elif protocol == "hysteria2":
-        return any(p.get("password", "") == proxy.get("password", "") for p in proxies)
     elif protocol == "hysteria":
         key = "auth-str" if "auth-str" in proxy else "auth_str"
         value = proxy.get(key, "")
@@ -245,7 +245,7 @@ SSR_SUPPORTED_PROTOCOL = [
 
 VMESS_SUPPORTED_CIPHERS = ["auto", "aes-128-gcm", "chacha20-poly1305", "none"]
 
-SPECIAL_PROTOCOLS = set(["vless", "tuic", "hysteria", "hysteria2"])
+SPECIAL_PROTOCOLS = set(["vless", "tuic", "hysteria", "hysteria2", "anytls"])
 
 # xtls-rprx-direct and xtls-rprx-origin are deprecated and no longer supported
 # XTLS_FLOWS = set(["xtls-rprx-direct", "xtls-rprx-origin", "xtls-rprx-vision"])
@@ -305,6 +305,11 @@ def verify(item: dict, mihomo: bool = True) -> bool:
         server = str(item.get("server", "")).strip().lower()
         if not server:
             return False
+
+        if server.startswith("::"):
+            # ipv6 addresses starting with ":::" cause yaml loading errors, need to expand to full format
+            server = ipaddress.IPv6Address(server).exploded
+
         item["server"] = server
 
         # port must be valid port number
@@ -469,7 +474,7 @@ def verify(item: dict, mihomo: bool = True) -> bool:
                 return False
         elif item["type"] == "snell":
             authentication = "psk"
-            if "version" in item and not item["version"].isdigit():
+            if "version" in item and not utils.is_number(item["version"]):
                 return False
 
             version = int(item.get("version", 1))
@@ -488,21 +493,57 @@ def verify(item: dict, mihomo: bool = True) -> bool:
                     if mode not in ["http", "tls"]:
                         return False
         elif item["type"] == "http" or item["type"] == "socks5":
-            authentication = "userpass"
+            for field in ["username", "password"]:
+                value = item.get(field, None)
+                if not value:
+                    continue
+
+                if not isinstance(value, str) and not utils.is_number(value):
+                    return False
+
+                if utils.is_number(value):
+                    value = QuotedStr(value)
+                else:
+                    value = utils.trim(value)
+
+                item[field] = value
+
+            return True
+
         elif mihomo and item["type"] in SPECIAL_PROTOCOLS:
-            if item["type"] == "vless":
+            if item["type"] == "anytls":
+                if "alpn" in item and type(item["alpn"]) != list:
+                    return False
+
+                for property in ["idle-session-check-interval", "idle-session-timeout", "min-idle-session"]:
+                    if property in item and (not utils.is_number(item[property]) or int(item[property]) < 0):
+                        return False
+
+            elif item["type"] == "vless":
                 authentication = "uuid"
+
+                # see: https://github.com/MetaCubeX/mihomo/blob/Alpha/transport/vless/encryption/factory.go#L12
+                encryption = utils.trim(item.get("encryption", ""))
+                if encryption not in ["", "none"]:
+                    parts = encryption.split(".")
+
+                    # Must be: mlkem768x25519plus.<mode>.<...>.<...> (len >= 4)
+                    if (
+                        len(parts) < 4
+                        or parts[0] != "mlkem768x25519plus"
+                        or parts[1] not in ("native", "xorpub", "random")
+                    ):
+                        return False
+
                 network = utils.trim(item.get("network", "tcp"))
 
                 # mihomo: https://wiki.metacubex.one/config/proxies/vless/#network
-                network_opts = ["ws", "tcp", "grpc", "http", "h2"] if mihomo else ["ws", "tcp", "grpc"]
+                network_opts = ["ws", "tcp", "grpc", "http", "h2", "xhttp"] if mihomo else ["ws", "tcp", "grpc"]
 
                 if network not in network_opts:
                     return False
                 if "flow" in item:
                     flow = utils.trim(item.get("flow", ""))
-
-                    # if flow and flow not in XTLS_FLOWS:
                     if flow and flow != "xtls-rprx-vision":
                         return False
                 if "ws-opts" in item:
@@ -527,22 +568,56 @@ def verify(item: dict, mihomo: bool = True) -> bool:
                         return False
                 if "reality-opts" in item:
                     reality_opts = item.get("reality-opts", {})
-                    if not reality_opts or type(reality_opts) != dict:
+                    if (
+                        not reality_opts
+                        or type(reality_opts) != dict
+                        or "public-key" not in reality_opts
+                        or "short-id" not in reality_opts
+                        or type(reality_opts["public-key"]) != str
+                    ):
                         return False
-                    if "public-key" not in reality_opts or type(reality_opts["public-key"]) != str:
-                        return False
-                    if "short-id" in reality_opts:
-                        short_id = reality_opts["short-id"]
-                        if type(short_id) != str:
-                            if utils.is_number(short_id):
-                                short_id = str(short_id)
-                            else:
-                                return False
 
-                        if len(short_id) != 8 or not is_hex(short_id):
+                    content = utils.trim(reality_opts["public-key"])
+                    content += "=" * (4 - len(content) % 4)
+                    public_key = base64.urlsafe_b64decode(content)
+                    if len(public_key) != 32:
+                        return False
+
+                    short_id = reality_opts["short-id"]
+                    if type(short_id) != str:
+                        if utils.is_number(short_id):
+                            short_id = str(short_id)
+                        else:
                             return False
+                    # if len(short_id) != 8 or not is_hex(short_id) or re.match(r"\d+e\d+", short_id, flags=re.I):
+                    #     return False
 
-                        reality_opts["short-id"] = QuotedStr(short_id)
+                    try:
+                        sib = bytes.fromhex(short_id)
+                        if len(sib) > 8:
+                            return False
+                    except ValueError:
+                        return False
+
+                    reality_opts["short-id"] = QuotedStr(short_id)
+                if "xhttp-opts" in item:
+                    if network != "xhttp":
+                        return False
+
+                    xhttp_opts = item.get("xhttp-opts", {})
+                    if not xhttp_opts or type(xhttp_opts) != dict:
+                        return False
+                    if "path" in xhttp_opts and type(xhttp_opts["path"]) != str:
+                        return False
+                    if "host" in xhttp_opts and type(xhttp_opts["host"]) != str:
+                        return False
+
+                    if "mode" in xhttp_opts:
+                        xhttp_mode = utils.trim(xhttp_opts.get("mode", ""))
+                        if xhttp_mode and xhttp_mode not in ["stream-one", "stream-up", "packet-up"]:
+                            return False
+                    if "headers" in xhttp_opts and type(xhttp_opts["headers"]) != dict:
+                        return False
             elif item["type"] == "tuic":
                 # mihomo: https://wiki.metacubex.one/config/proxies/tuic
                 token = wrap(item.get("token", ""))
@@ -598,6 +673,10 @@ def verify(item: dict, mihomo: bool = True) -> bool:
                         continue
 
                     traffic = item.get(property, "")
+                    if traffic == "null":
+                        item.pop(property)
+                        continue
+
                     if traffic and utils.is_number(traffic):
                         traffic = str(traffic)
 
@@ -614,8 +693,13 @@ def verify(item: dict, mihomo: bool = True) -> bool:
                     authentication = "password"
                     if "obfs" in item:
                         obfs = utils.trim(item.get("obfs", ""))
-                        if obfs != "salamander":
-                            return False
+                        if obfs:
+                            if obfs != "salamander":
+                                return False
+                            obfs_password = utils.trim(item.get("obfs-password", ""))
+                            if not obfs_password:
+                                return False
+
                     if "obfs-password" in item and type(item["obfs-password"]) != str:
                         return False
                 else:
@@ -665,6 +749,7 @@ def check(proxy: dict, api_url: str, timeout: int, test_url: str, delay: int, st
     try:
         proxy_name = urllib.parse.quote(proxy.get("name", ""), safe="")
     except:
+        logger.debug(f"encoding proxy name error, proxy: {proxy.get('name', '')}")
         return False
 
     base_url = f"http://{api_url}/proxies/{proxy_name}/delay?timeout={str(timeout)}&url="
@@ -679,10 +764,16 @@ def check(proxy: dict, api_url: str, timeout: int, test_url: str, delay: int, st
         targets.append(random.choice(DOWNLOAD_URL))
     try:
         alive, allowed = True, False
+        trace = os.getenv("FOOL_PROOF", "").lower() in ["true", "1"]
+
+        if trace:
+            # prevents liveness check from being terminated due to a long period of time with no output
+            logger.info(f"start liveness check, proxy: {proxy.get('name', '')}")
+
         for target in targets:
             target = urllib.parse.quote(target)
             url = f"{base_url}{target}"
-            content = utils.http_get(url=url, retry=2, interval=interval)
+            content = utils.http_get(url=url, retry=2, interval=interval, trace=trace)
             try:
                 data = json.loads(content)
             except:
@@ -718,10 +809,11 @@ def check(proxy: dict, api_url: str, timeout: int, test_url: str, delay: int, st
                         if data.get("delay", -1) > 0:
                             proxy["name"] = f"{proxy_name}{utils.CHATGPT_FLAG}"
                 except Exception:
-                    pass
+                    logger.debug(f"check for OpenAI failed, proxy: {proxy.get('name')}, message: {str(e)}")
 
         return alive
-    except:
+    except Exception as e:
+        logger.debug(f"check failed, proxy: {proxy.get('name')}, message: {str(e)}")
         return False
 
 
