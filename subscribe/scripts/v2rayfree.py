@@ -51,7 +51,7 @@ def fetch(email: str, retry: int = 2) -> str:
                 fake_email = email[: index // 2] + "***" + email[index:]
 
             if "已封禁" in content:
-                logger.warn(f"[GetRSSError] {content}, email=[{fake_email}]")
+                logger.warning(f"[GetRSSError] {content}, email=[{fake_email}]")
                 return ""
 
             regex = "https://f\.kxyz\.eu\.org/f\.php\?r=([A-Za-z0-9/=]+)"
@@ -81,16 +81,22 @@ def getrss(params: dict) -> list:
         return []
 
     include = params.get("include", "").strip()
-    persist = params.get("persist", {})
+    storage = params.get("storage", {})
+    if not storage or type(storage) != dict:
+        logger.error(f"[V2RayFreeError] cannot fetch subscribes bcause storage config is invalidate")
+        return []
 
-    exists = load(persist=persist)
+    persist = storage.get("items", {})
+    push_config = push.PushConfig.from_dict(storage)
+
+    exists = load(config=push_config, persist=persist)
     emails = [x for x in emails if x not in exists.keys()]
 
     results, subscribes = utils.multi_thread_run(func=fetch, tasks=emails), []
     exists.update(filter(data=dict(zip(emails, results))))
 
     # persist subscribes
-    commons.persist(data=exists, persist=persist)
+    commons.persist(config=push_config, data=exists, persist=persist)
 
     results = list(exists.values())
     results.extend(config.get("sub", []))
@@ -117,12 +123,12 @@ def getrss(params: dict) -> list:
     return [config]
 
 
-def load(persist: dict) -> dict:
-    pushtool = push.get_instance()
-    if not pushtool.validate(persist):
+def load(config: push.PushConfig, persist: dict) -> dict:
+    pushtool = push.get_instance(config=config)
+    if not pushtool.validate(config=persist):
         return {}
 
-    url = pushtool.raw_url(push_conf=persist)
+    url = pushtool.raw_url(config=persist)
     try:
         content = utils.http_get(url=url)
         data = json.loads(content)
