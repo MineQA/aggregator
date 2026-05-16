@@ -31,21 +31,32 @@ datas += collect_tree("clash", excludes={"__pycache__"})
 datas += collect_tree("subconverter", excludes={"__pycache__"})
 datas += collect_data_files("customtkinter")
 
+# subscribe/*.py is loaded dynamically by main.py via runpy.run_path and kept as data files.
+# Do not add local bare modules such as "workflow" to hiddenimports, otherwise PyInstaller
+# may run third-party hooks (for example hook-workflow.py) against our local module name.
+hiddenimports = [
+    "customtkinter",
+    "yaml",
+    "tqdm",
+    "geoip2",
+    "Cryptodome",
+    "fofa_hack",
+    "uuid",
+    "base64",
+    "gzip",
+    "ipaddress",
+    "multiprocessing",
+    "multiprocessing.pool",
+    "xml.etree.ElementTree",
+]
+
 a = Analysis(
     ["main.py"],
-    pathex=[str(root), str(root / "subscribe")],
+    pathex=[str(root)],
     binaries=[],
     datas=datas,
-    hiddenimports=[
-        "customtkinter", "yaml", "geoip2", "Cryptodome", "fofa_hack",
-        "crawl", "airport", "clash", "subconverter", "push", "workflow",
-        "executable", "logger", "origin", "mailtm", "urlvalidator",
-        "renewal", "location", "utils", "collect", "process",
-        "scripts.commons", "scripts.fofa", "scripts.dynamic",
-        "scripts.gitforks", "scripts.scaner", "scripts.tempairport",
-        "scripts.v2rayfree", "scripts.v2rayse",
-    ],
-    hookspath=[str(root / "hooks")],
+    hiddenimports=hiddenimports,
+    hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],

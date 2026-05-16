@@ -4,6 +4,8 @@ import runpy
 import sys
 from pathlib import Path
 
+import gui.pyinstaller_preload  # noqa: F401
+
 
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "--cli":
