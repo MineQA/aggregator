@@ -33,10 +33,18 @@ datas += collect_data_files("customtkinter")
 
 a = Analysis(
     ["main.py"],
-    pathex=[str(root)],
+    pathex=[str(root), str(root / "subscribe")],
     binaries=[],
     datas=datas,
-    hiddenimports=["customtkinter", "yaml", "geoip2", "Cryptodome", "fofa_hack"],
+    hiddenimports=[
+        "customtkinter", "yaml", "geoip2", "Cryptodome", "fofa_hack",
+        "crawl", "airport", "clash", "subconverter", "push", "workflow",
+        "executable", "logger", "origin", "mailtm", "urlvalidator",
+        "renewal", "location", "utils", "collect", "process",
+        "scripts.commons", "scripts.fofa", "scripts.dynamic",
+        "scripts.gitforks", "scripts.scaner", "scripts.tempairport",
+        "scripts.v2rayfree", "scripts.v2rayse",
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
