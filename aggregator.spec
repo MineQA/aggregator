@@ -45,7 +45,7 @@ a = Analysis(
         "scripts.gitforks", "scripts.scaner", "scripts.tempairport",
         "scripts.v2rayfree", "scripts.v2rayse",
     ],
-    hookspath=[],
+    hookspath=[str(root / "hooks")],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
